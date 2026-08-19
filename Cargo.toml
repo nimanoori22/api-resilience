@@ -1,0 +1,13 @@
+[package]
+name = "api-resilience"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tower = { version = "0.5.3", features = ["util"] }
+tower-resilience = { version = "0.10.1", features = ["retry", "ratelimiter"] }
+tokio = { version = "1.53.1", features = ["rt", "time", "macros"] }
+thiserror = "2"
+
+[dev-dependencies]
+tokio = { version = "1.53.1", features = ["full", "test-util"] }
