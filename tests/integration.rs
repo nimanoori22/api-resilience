@@ -38,9 +38,6 @@ struct RequiresReadiness {
 
 impl Clone for RequiresReadiness {
     fn clone(&self) -> Self {
-        // A clone represents a distinct service instance and must be readied
-        // independently. This catches readiness checks performed on the wrong
-        // layer instance.
         Self {
             was_readied: Arc::new(AtomicBool::new(false)),
         }
@@ -104,6 +101,40 @@ async fn rate_limit_delays_another_request_until_the_next_window() {
     assert_eq!(calls.load(Ordering::SeqCst), 2);
 }
 
+#[tokio::test(start_paused = true)]
+async fn rate_limit_allows_bursts_up_to_the_configured_limit() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&calls);
+    let service = tower::service_fn(move |_: ()| {
+        let counter = Arc::clone(&counter);
+        async move {
+            counter.fetch_add(1, Ordering::SeqCst);
+            Ok::<_, std::io::Error>(())
+        }
+    });
+    let cfg = ResilienceConfig {
+        requests_per_second: 3,
+        ..config()
+    };
+    let mut service = resilient(service, cfg);
+
+    for _ in 0..3 {
+        service.ready().await.unwrap().call(()).await.unwrap();
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
+
+    let pending = service.call(());
+    tokio::pin!(pending);
+    assert!(
+        futures_poll_once(pending.as_mut()).is_none(),
+        "the fourth request should be throttled until the next window"
+    );
+
+    tokio::time::advance(Duration::from_secs(1)).await;
+    pending.await.unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 4);
+}
+
 #[tokio::test]
 async fn retries_then_succeeds() {
     let calls = Arc::new(AtomicUsize::new(0));
@@ -125,6 +156,34 @@ async fn retries_then_succeeds() {
 
     resilient(service, cfg).oneshot(()).await.unwrap();
     assert_eq!(calls.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test(start_paused = true)]
+async fn backoff_increases_between_retries() {
+    let call_times = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let times = Arc::clone(&call_times);
+    let service = tower::service_fn(move |_: ()| {
+        times.lock().unwrap().push(tokio::time::Instant::now());
+        async { Err::<(), _>(std::io::Error::other("always fails")) }
+    });
+    let cfg = ResilienceConfig {
+        max_retries: 3,
+        initial_backoff: Duration::from_millis(100),
+        max_backoff: Duration::from_secs(10),
+        ..config()
+    };
+
+    let _ = resilient(service, cfg).oneshot(()).await;
+
+    let times = call_times.lock().unwrap();
+    assert_eq!(times.len(), 4, "۱ تلاش اولیه + ۳ retry = ۴ فراخوانی");
+
+    let gap1 = times[1] - times[0];
+    let gap2 = times[2] - times[1];
+    let gap3 = times[3] - times[2];
+
+    assert!(gap2 >= gap1, "backoff نباید کوچیک‌تر بشه بین تلاش‌ها");
+    assert!(gap3 >= gap2, "backoff نباید کوچیک‌تر بشه بین تلاش‌ها");
 }
 
 #[tokio::test]
