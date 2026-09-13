@@ -53,7 +53,11 @@ pub use error::ResilienceError;
 pub fn resilient<S, Req>(
     inner: S,
     cfg: ResilienceConfig,
-) -> impl Service<Req, Response = S::Response, Error = ResilienceError<S::Error>>
+) -> impl Service<
+    Req, 
+    Response = S::Response, 
+    Error = ResilienceError<S::Error>, 
+    Future = Pin<Box<dyn std::future::Future<Output = Result<S::Response, ResilienceError<S::Error>>> + Send>>>
 where
     S: Service<Req> + Clone + Send + 'static,
     S::Response: Send + 'static,
